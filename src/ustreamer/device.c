@@ -503,7 +503,11 @@ static int _device_apply_dv_timings(device_s *dev) {
 }
 
 static int _device_open_format(device_s *dev, bool first) {
-	const unsigned stride = align_size(RUN(width), 32) << 1;
+	unsigned stride = align_size(RUN(width), 32) << 1;
+
+	if (dev->format == V4L2_PIX_FMT_SRGGB10P) {
+		stride = align_size(RUN(width), 32) * 5 / 4;
+	}
 
 	struct v4l2_format fmt = {0};
 	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
