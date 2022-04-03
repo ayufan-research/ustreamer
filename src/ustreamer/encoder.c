@@ -52,6 +52,7 @@ encoder_s *encoder_init(void) {
 	run->type = ENCODER_TYPE_CPU;
 	run->quality = 80;
 	A_MUTEX_INIT(&run->mutex);
+	A_MUTEX_INIT(&run->m2m_isp_mutex);
 
 	encoder_s *enc;
 	A_CALLOC(enc, 1);
@@ -73,6 +74,7 @@ void encoder_destroy(encoder_s *enc) {
 	if (ER(m2m_isp)) {
 		m2m_encoder_destroy(ER(m2m_isp));
 	}
+	A_MUTEX_DESTROY(&ER(m2m_isp_mutex));
 	A_MUTEX_DESTROY(&ER(mutex));
 	free(enc->run);
 	free(enc);
@@ -220,7 +222,12 @@ static bool _worker_run_job(worker_s *wr) {
 	if (requires_m2m_isp(src->format)) {
 		tmp = frame_init();
 
-		if (m2m_encoder_compress(ER(m2m_isp), src, tmp, false) < 0) {
+		// TODO: This should use a queue approach
+		A_MUTEX_LOCK(&ER(m2m_isp_mutex));
+		int ret = m2m_encoder_compress(ER(m2m_isp), src, tmp, false);
+		A_MUTEX_UNLOCK(&ER(m2m_isp_mutex));
+
+		if (ret < 0) {
 			goto error;
 		}
 

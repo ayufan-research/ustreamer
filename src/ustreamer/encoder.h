@@ -64,6 +64,7 @@ typedef struct {
 	m2m_encoder_s	**m2ms;
 
 	m2m_encoder_s *m2m_isp;
+	pthread_mutex_t	m2m_isp_mutex;
 } encoder_runtime_s;
 
 typedef struct {

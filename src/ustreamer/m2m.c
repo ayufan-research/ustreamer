@@ -501,8 +501,6 @@ static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, fra
 		input_buf.length = src->used;
 	}
 	if (!RUN(dma)) {
-		E_LOG_DEBUG("SRC=%p, DEST=%p, SIZE=%zu, ALLOCATED=%zu", src->data, RUN(input_bufs[input_buf.index].data),
-			src->used, RUN(input_bufs[input_buf.index].allocated));
 		memcpy(RUN(input_bufs[input_buf.index].data), src->data, src->used);
 	}
 
