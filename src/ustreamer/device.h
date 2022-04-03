@@ -123,6 +123,7 @@ typedef struct {
 	unsigned			width;
 	unsigned			height;
 	unsigned			format;
+	unsigned			capture_format;
 	unsigned			jpeg_quality;
 	v4l2_std_id			standard;
 	enum v4l2_memory	io_method;
@@ -143,6 +144,7 @@ device_s *device_init(void);
 void device_destroy(device_s *dev);
 
 int device_parse_format(const char *str);
+int device_parse_capture_format(const char *str);
 v4l2_std_id device_parse_standard(const char *str);
 int device_parse_io_method(const char *str);
 

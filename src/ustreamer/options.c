@@ -28,6 +28,7 @@ enum _OPT_VALUES {
 	_O_INPUT = 'i',
 	_O_RESOLUTION = 'r',
 	_O_FORMAT = 'm',
+	_O_CAPTURE_FORMAT = 'C',
 	_O_TV_STANDARD = 'a',
 	_O_IO_METHOD = 'I',
 	_O_DESIRED_FPS = 'f',
@@ -131,6 +132,7 @@ static const struct option _LONG_OPTS[] = {
 	{"input",					required_argument,	NULL,	_O_INPUT},
 	{"resolution",				required_argument,	NULL,	_O_RESOLUTION},
 	{"format",					required_argument,	NULL,	_O_FORMAT},
+	{"capture-format",			required_argument,	NULL,	_O_CAPTURE_FORMAT},
 	{"tv-standard",				required_argument,	NULL,	_O_TV_STANDARD},
 	{"io-method",				required_argument,	NULL,	_O_IO_METHOD},
 	{"desired-fps",				required_argument,	NULL,	_O_DESIRED_FPS},
@@ -365,6 +367,7 @@ int options_parse(options_s *options, device_s *dev, encoder_s *enc, stream_s *s
 #			pragma GCC diagnostic ignored "-Wsign-compare"
 #			pragma GCC diagnostic push
 			case _O_FORMAT:			OPT_PARSE("pixel format", dev->format, device_parse_format, FORMAT_UNKNOWN, FORMATS_STR);
+			case _O_CAPTURE_FORMAT:			OPT_PARSE("capture pixel format", dev->capture_format, device_parse_capture_format, FORMAT_UNKNOWN, FORMATS_STR);
 #			pragma GCC diagnostic pop
 			case _O_TV_STANDARD:	OPT_PARSE("TV standard", dev->standard, device_parse_standard, STANDARD_UNKNOWN, STANDARDS_STR);
 			case _O_IO_METHOD:		OPT_PARSE("IO method", dev->io_method, device_parse_io_method, IO_METHOD_UNKNOWN, IO_METHODS_STR);
