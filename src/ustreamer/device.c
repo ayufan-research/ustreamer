@@ -47,19 +47,6 @@ static const struct {
 
 static const struct {
 	const char *name;
-	const unsigned format;
-} _CAPTURE_FORMATS[] = {
-	{"pRAA", V4L2_PIX_FMT_SRGGB10P},
-	{"YUYV",	V4L2_PIX_FMT_YUYV},
-	{"UYVY",	V4L2_PIX_FMT_UYVY},
-	{"RGB565",	V4L2_PIX_FMT_RGB565},
-	{"RGB24",	V4L2_PIX_FMT_RGB24},
-	{"MJPEG",	V4L2_PIX_FMT_MJPEG},
-	{"JPEG",	V4L2_PIX_FMT_JPEG},
-};
-
-static const struct {
-	const char *name;
 	const enum v4l2_memory io_method;
 } _IO_METHODS[] = {
 	{"MMAP",	V4L2_MEMORY_MMAP},
@@ -107,7 +94,6 @@ device_s *device_init(void) {
 	dev->width = 640;
 	dev->height = 480;
 	dev->format = V4L2_PIX_FMT_YUYV;
-	dev->capture_format = 0;
 	dev->jpeg_quality = 80;
 	dev->standard = V4L2_STD_UNKNOWN;
 	dev->io_method = V4L2_MEMORY_MMAP;
@@ -127,15 +113,6 @@ int device_parse_format(const char *str) {
 	for (unsigned index = 0; index < ARRAY_LEN(_FORMATS); ++index) {
 		if (!strcasecmp(str, _FORMATS[index].name)) {
 			return _FORMATS[index].format;
-		}
-	}
-	return FORMAT_UNKNOWN;
-}
-
-int device_parse_capture_format(const char *str) {
-	for (unsigned index = 0; index < ARRAY_LEN(_CAPTURE_FORMATS); ++index) {
-		if (!strcasecmp(str, _CAPTURE_FORMATS[index].name)) {
-			return _CAPTURE_FORMATS[index].format;
 		}
 	}
 	return FORMAT_UNKNOWN;
@@ -531,7 +508,7 @@ static int _device_open_format(device_s *dev, bool first) {
 	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	fmt.fmt.pix.width = RUN(width);
 	fmt.fmt.pix.height = RUN(height);
-	fmt.fmt.pix.pixelformat = dev->capture_format ? dev->capture_format : dev->format;
+	fmt.fmt.pix.pixelformat = dev->format;
 	fmt.fmt.pix.field = V4L2_FIELD_ANY;
 	fmt.fmt.pix.bytesperline = stride;
 
