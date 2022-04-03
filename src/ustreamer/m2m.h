@@ -66,6 +66,9 @@ typedef struct {
 	unsigned	height;
 	unsigned	input_format;
 	unsigned	stride;
+	unsigned	input_type;
+	unsigned	output_type;
+	unsigned	mplanes;
 	bool		dma;
 	bool		ready;
 

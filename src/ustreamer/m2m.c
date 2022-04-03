@@ -30,7 +30,7 @@ static m2m_encoder_s *_m2m_encoder_init(
 static int _m2m_encoder_prepare(m2m_encoder_s *enc, const frame_s *frame);
 
 static int _m2m_encoder_init_buffers(
-	m2m_encoder_s *enc, const char *name, enum v4l2_buf_type type,
+	m2m_encoder_s *enc, const char *name, int fd, enum v4l2_buf_type type,
 	m2m_buffer_s **bufs_ptr, unsigned *n_bufs_ptr, bool dma);
 
 static void _m2m_encoder_cleanup(m2m_encoder_s *enc);
@@ -101,13 +101,14 @@ m2m_encoder_s *m2m_isp_encoder_init(const char *name, const char *input_path, co
 		{NULL, 0, 0},
 	};
 
-	return _m2m_encoder_init(name, input_path, output_path, output_format, 30, false, options);
+	return _m2m_encoder_init(name, input_path, output_path, output_format, 30, true, options);
 }
 
 void m2m_encoder_destroy(m2m_encoder_s *enc) {
 	E_LOG_INFO("Destroying encoder ...");
 	_m2m_encoder_cleanup(enc);
 	free(enc->options);
+	free(enc->output_path);
 	free(enc->path);
 	free(enc->name);
 	free(enc);
@@ -159,6 +160,9 @@ static m2m_encoder_s *_m2m_encoder_init(
 	run->last_online = -1;
 	run->fd = -1;
 	run->output_fd = -1;
+	run->input_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+	run->output_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+	run->mplanes = 1;
 
 	m2m_encoder_s *enc;
 	A_CALLOC(enc, 1);
@@ -170,6 +174,9 @@ static m2m_encoder_s *_m2m_encoder_init(
 	}
 	if (output_path != NULL) {
 		assert(enc->output_path = strdup(output_path));
+		run->input_type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+		run->output_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+		run->mplanes = 0;
 	}
 	enc->output_format = output_format;
 	enc->fps = fps;
@@ -186,7 +193,7 @@ static m2m_encoder_s *_m2m_encoder_init(
 }
 
 #define E_XIOCTL(_fd, _request, _value, _msg, ...) do { \
-		if (xioctl(RUN_FD(_fd), _request, _value) < 0) { \
+		if (xioctl(_fd, _request, _value) < 0) { \
 			E_LOG_PERROR(_msg, ##__VA_ARGS__); \
 			goto error; \
 		} \
@@ -225,46 +232,36 @@ static int _m2m_encoder_prepare(m2m_encoder_s *enc, const frame_s *frame) {
 		ctl.value = option->value;
 
 		E_LOG_DEBUG("Configuring option %s ...", option->name);
-		E_XIOCTL(fd, VIDIOC_S_CTRL, &ctl, "Can't set option %s", option->name);
+		E_XIOCTL(RUN_FD(fd), VIDIOC_S_CTRL, &ctl, "Can't set option %s", option->name);
 	}
 
 	{
 		struct v4l2_format fmt = {0};
-		if (RUN(output_fd) >= 0) {
-			fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-			fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_DEFAULT;
-		} else {
-			fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-			fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_JPEG; // libcamera currently has no means to request the right colour space
-		}
+		fmt.type = RUN(input_type);
+		fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_JPEG; // libcamera currently has no means to request the right colour space
 		fmt.fmt.pix_mp.width = RUN(width);
 		fmt.fmt.pix_mp.height = RUN(height);
 		fmt.fmt.pix_mp.pixelformat = RUN(input_format);
 		fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
-		fmt.fmt.pix_mp.num_planes = 1;
+		fmt.fmt.pix_mp.num_planes = RUN(mplanes);
 		// fmt.fmt.pix_mp.plane_fmt[0].bytesperline = RUN(stride);
 		E_LOG_DEBUG("Configuring INPUT format ...");
-		E_XIOCTL(fd, VIDIOC_S_FMT, &fmt, "Can't set INPUT format");
+		E_XIOCTL(RUN_FD(fd), VIDIOC_S_FMT, &fmt, "Can't set INPUT format");
 	}
 
 	{
 		struct v4l2_format fmt = {0};
-		if (RUN(output_fd) >= 0) {
-			fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-			fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_JPEG;
-		} else {
-			fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-			fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_DEFAULT;
-		}
+		fmt.type = RUN(output_type);
+		fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_DEFAULT;
 		fmt.fmt.pix_mp.width = RUN(width);
 		fmt.fmt.pix_mp.height = RUN(height);
 		fmt.fmt.pix_mp.pixelformat = enc->output_format;
 		fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
-		fmt.fmt.pix_mp.num_planes = 1;
+		fmt.fmt.pix_mp.num_planes = RUN(mplanes);
 		// fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
 		// fmt.fmt.pix_mp.plane_fmt[0].sizeimage = 512 << 10;
 		E_LOG_DEBUG("Configuring OUTPUT format ...");
-		E_XIOCTL(output_fd, VIDIOC_S_FMT, &fmt, "Can't set OUTPUT format");
+		E_XIOCTL(RUN_FD(output_fd), VIDIOC_S_FMT, &fmt, "Can't set OUTPUT format");
 		if (fmt.fmt.pix_mp.pixelformat != enc->output_format) {
 			char fourcc_str[8];
 			E_LOG_ERROR("The OUTPUT format can't be configured as %s",
@@ -274,33 +271,31 @@ static int _m2m_encoder_prepare(m2m_encoder_s *enc, const frame_s *frame) {
 		}
 	}
 
-	if (enc->fps > 0) { // TODO: Check this for MJPEG
+	if (enc->fps > 0 && RUN(mplanes) > 0) { // TODO: Check this for MJPEG
 		struct v4l2_streamparm setfps = {0};
-		setfps.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+		setfps.type = RUN(input_type);
 		setfps.parm.output.timeperframe.numerator = 1;
 		setfps.parm.output.timeperframe.denominator = enc->fps;
 		E_LOG_DEBUG("Configuring INPUT FPS ...");
-		E_XIOCTL(fd, VIDIOC_S_PARM, &setfps, "Can't set INPUT FPS");
+		E_XIOCTL(RUN_FD(fd), VIDIOC_S_PARM, &setfps, "Can't set INPUT FPS");
 	}
 
-	if (_m2m_encoder_init_buffers(enc, (dma ? "INPUT-DMA" : "INPUT"), V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
+	if (_m2m_encoder_init_buffers(enc, (dma ? "INPUT-DMA" : "INPUT"), RUN(fd), RUN(input_type),
 		&RUN(input_bufs), &RUN(n_input_bufs), dma) < 0) {
 		goto error;
 	}
-	if (_m2m_encoder_init_buffers(enc, "OUTPUT", V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+	if (_m2m_encoder_init_buffers(enc, "OUTPUT", RUN_FD(output_fd), RUN(output_type),
 		&RUN(output_bufs), &RUN(n_output_bufs), false) < 0) {
 		goto error;
 	}
 
-	{
-		enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-		E_LOG_DEBUG("Starting INPUT ...");
-		E_XIOCTL(fd, VIDIOC_STREAMON, &type, "Can't start INPUT");
+	enum v4l2_buf_type type = RUN(input_type);
+	E_LOG_DEBUG("Starting INPUT ...");
+	E_XIOCTL(RUN_FD(fd), VIDIOC_STREAMON, &type, "Can't start INPUT");
 
-		type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-		E_LOG_DEBUG("Starting OUTPUT ...");
-		E_XIOCTL(output_fd, VIDIOC_STREAMON, &type, "Can't start OUTPUT");
-	}
+	type = RUN(output_type);
+	E_LOG_DEBUG("Starting OUTPUT ...");
+	E_XIOCTL(RUN_FD(output_fd), VIDIOC_STREAMON, &type, "Can't start OUTPUT");
 
 	RUN(ready) = true;
 	E_LOG_DEBUG("Encoder state: *** READY ***");
@@ -313,7 +308,7 @@ static int _m2m_encoder_prepare(m2m_encoder_s *enc, const frame_s *frame) {
 }
 
 static int _m2m_encoder_init_buffers(
-	m2m_encoder_s *enc, const char *name, enum v4l2_buf_type type,
+	m2m_encoder_s *enc, const char *name, int fd, enum v4l2_buf_type type,
 	m2m_buffer_s **bufs_ptr, unsigned *n_bufs_ptr, bool dma) {
 
 	E_LOG_DEBUG("Initializing %s buffers ...", name);
@@ -324,10 +319,7 @@ static int _m2m_encoder_init_buffers(
 	req.memory = (dma ? V4L2_MEMORY_DMABUF : V4L2_MEMORY_MMAP);
 
 	E_LOG_DEBUG("Requesting %u %s buffers ...", req.count, name);
-	if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
-		E_XIOCTL(fd, VIDIOC_REQBUFS, &req, "Can't request %s buffers", name);
-	else
-		E_XIOCTL(output_fd, VIDIOC_REQBUFS, &req, "Can't request %s buffers", name);
+	E_XIOCTL(fd, VIDIOC_REQBUFS, &req, "Can't request %s buffers", name);
 	if (req.count < 1) {
 		E_LOG_ERROR("Insufficient %s buffer memory: %u", name, req.count);
 		goto error;
@@ -344,34 +336,47 @@ static int _m2m_encoder_init_buffers(
 			buf.type = type;
 			buf.memory = V4L2_MEMORY_MMAP;
 			buf.index = *n_bufs_ptr;
-			buf.length = 1;
-			buf.m.planes = &plane;
+
+			if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE || type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+				buf.length = 1;
+				buf.m.planes = &plane;
+			}
 
 			E_LOG_DEBUG("Querying %s buffer=%u ...", name, *n_bufs_ptr);
-			if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
-				E_XIOCTL(fd, VIDIOC_QUERYBUF, &buf, "Can't query %s buffer=%u", name, *n_bufs_ptr);
-			else
-				E_XIOCTL(output_fd, VIDIOC_QUERYBUF, &buf, "Can't query %s buffer=%u", name, *n_bufs_ptr);
+			E_XIOCTL(fd, VIDIOC_QUERYBUF, &buf, "Can't query %s buffer=%u", name, *n_bufs_ptr);
 
 			E_LOG_DEBUG("Mapping %s buffer=%u ...", name, *n_bufs_ptr);
-			if (((*bufs_ptr)[*n_bufs_ptr].data = mmap(
-				NULL,
-				plane.length,
-				PROT_READ | PROT_WRITE,
-				MAP_SHARED,
-				(type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) ? RUN(fd) : RUN_FD(output_fd),
-				plane.m.mem_offset
-			)) == MAP_FAILED) {
-				E_LOG_PERROR("Can't map %s buffer=%u", name, *n_bufs_ptr);
-				goto error;
+
+			if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE || type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+				if (((*bufs_ptr)[*n_bufs_ptr].data = mmap(
+					NULL,
+					plane.length,
+					PROT_READ | PROT_WRITE,
+					MAP_SHARED,
+					fd,
+					plane.m.mem_offset
+				)) == MAP_FAILED) {
+					E_LOG_PERROR("Can't map %s buffer=%u", name, *n_bufs_ptr);
+					goto error;
+				}
+				(*bufs_ptr)[*n_bufs_ptr].allocated = plane.length;
+			} else {
+				if (((*bufs_ptr)[*n_bufs_ptr].data = mmap(
+					NULL,
+					buf.length,
+					PROT_READ | PROT_WRITE,
+					MAP_SHARED,
+					fd,
+					buf.m.offset
+				)) == MAP_FAILED) {
+					E_LOG_PERROR("Can't map %s buffer=%u", name, *n_bufs_ptr);
+					goto error;
+				}
+				(*bufs_ptr)[*n_bufs_ptr].allocated = buf.length;
 			}
-			(*bufs_ptr)[*n_bufs_ptr].allocated = plane.length;
 
 			E_LOG_DEBUG("Queuing %s buffer=%u ...", name, *n_bufs_ptr);
-			if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
-				E_XIOCTL(fd, VIDIOC_QBUF, &buf, "Can't queue %s buffer=%u", name, *n_bufs_ptr);
-			else
-				E_XIOCTL(output_fd, VIDIOC_QBUF, &buf, "Can't queue %s buffer=%u", name, *n_bufs_ptr);
+			E_XIOCTL(fd, VIDIOC_QBUF, &buf, "Can't queue %s buffer=%u", name, *n_bufs_ptr);
 		}
 	}
 
@@ -390,8 +395,8 @@ static void _m2m_encoder_cleanup(m2m_encoder_s *enc) {
 				} \
 			}
 
-		STOP_STREAM(output_fd, "OUTPUT", V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
-		STOP_STREAM(fd, "INPUT", V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
+		STOP_STREAM(output_fd, "OUTPUT", RUN(output_type));
+		STOP_STREAM(fd, "INPUT", RUN(input_type));
 
 #		undef STOP_STREAM
 	}
@@ -446,29 +451,32 @@ static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, fra
 		ctl.id = V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME;
 		ctl.value = 1;
 		E_LOG_DEBUG("Forcing keyframe ...")
-		E_XIOCTL(fd, VIDIOC_S_CTRL, &ctl, "Can't force keyframe");
+		E_XIOCTL(RUN_FD(fd), VIDIOC_S_CTRL, &ctl, "Can't force keyframe");
 	}
 
 	struct v4l2_buffer input_buf = {0};
 	struct v4l2_plane input_plane = {0};
-	if (RUN(output_fd) >= 0) {
-		input_buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-	} else {
-		input_buf.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+	input_buf.type = RUN(input_type);
+
+	if (RUN(mplanes) > 0) {
+		input_buf.length = 1;
+		input_buf.m.planes = &input_plane;
 	}
-	input_buf.length = 1;
-	input_buf.m.planes = &input_plane;
 
 	if (RUN(dma)) {
 		input_buf.index = 0;
 		input_buf.memory = V4L2_MEMORY_DMABUF;
 		input_buf.field = V4L2_FIELD_NONE;
-		input_plane.m.fd = src->dma_fd;
-		E_LOG_DEBUG("Using INPUT-DMA buffer=%u", input_buf.index);
+
+		if (RUN(mplanes) > 0)
+			input_plane.m.fd = src->dma_fd;
+		else
+			input_buf.m.fd = src->dma_fd;
+		E_LOG_DEBUG("Using INPUT-DMA buffer=%u, fd=%u", input_buf.index, src->dma_fd);
 	} else {
 		input_buf.memory = V4L2_MEMORY_MMAP;
 		E_LOG_DEBUG("Grabbing INPUT buffer ...");
-		E_XIOCTL(fd, VIDIOC_DQBUF, &input_buf, "Can't grab INPUT buffer");
+		E_XIOCTL(RUN_FD(fd), VIDIOC_DQBUF, &input_buf, "Can't grab INPUT buffer");
 		if (input_buf.index >= RUN(n_input_bufs)) {
 			E_LOG_ERROR("V4L2 error: grabbed invalid INPUT: buffer=%u, n_bufs=%u",
 				input_buf.index, RUN(n_input_bufs));
@@ -485,22 +493,29 @@ static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, fra
 
 	input_buf.timestamp.tv_sec = ts.tv_sec;
 	input_buf.timestamp.tv_usec = ts.tv_usec;
-	input_plane.bytesused = src->used;
-	input_plane.length = src->used;
+	if (RUN(mplanes) > 0) {
+		input_plane.bytesused = src->used;
+		input_plane.length = src->used;
+	} else {
+		input_buf.bytesused = 0;
+		input_buf.length = src->used;
+	}
 	if (!RUN(dma)) {
+		E_LOG_DEBUG("SRC=%p, DEST=%p, SIZE=%zu, ALLOCATED=%zu", src->data, RUN(input_bufs[input_buf.index].data),
+			src->used, RUN(input_bufs[input_buf.index].allocated));
 		memcpy(RUN(input_bufs[input_buf.index].data), src->data, src->used);
 	}
 
 	const char *input_name = (RUN(dma) ? "INPUT-DMA" : "INPUT");
 
 	E_LOG_DEBUG("Sending%s %s buffer ...", (!RUN(dma) ? " (releasing)" : ""), input_name);
-	E_XIOCTL(output_fd, VIDIOC_QBUF, &input_buf, "Can't send %s buffer", input_name);
+	E_XIOCTL(RUN_FD(fd), VIDIOC_QBUF, &input_buf, "Can't send %s buffer", input_name);
 
 	// Для не-DMA отправка буфера по факту являтся освобождением этого буфера
 	bool input_released = !RUN(dma);
 
 	while (true) {
-		struct pollfd enc_poll = {RUN(fd), POLLIN, 0};
+		struct pollfd enc_poll = {RUN_FD(output_fd), POLLIN, 0};
 
 		E_LOG_DEBUG("Polling encoder ...");
 		if (poll(&enc_poll, 1, 1000) < 0 && errno != EINTR) {
@@ -511,19 +526,20 @@ static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, fra
 		if (enc_poll.revents & POLLIN) {
 			if (!input_released) {
 				E_LOG_DEBUG("Releasing %s buffer=%u ...", input_name, input_buf.index);
-				E_XIOCTL(fd, VIDIOC_DQBUF, &input_buf, "Can't release %s buffer=%u",
+				E_XIOCTL(RUN_FD(fd), VIDIOC_DQBUF, &input_buf, "Can't release %s buffer=%u",
 					input_name, input_buf.index);
 				input_released = true;
 			}
 
 			struct v4l2_buffer output_buf = {0};
 			struct v4l2_plane output_plane = {0};
-			output_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+			output_buf.type = RUN(output_type);
 			output_buf.memory = V4L2_MEMORY_MMAP;
 			output_buf.length = 1;
 			output_buf.m.planes = &output_plane;
 			E_LOG_DEBUG("Fetching OUTPUT buffer ...");
-			E_XIOCTL(output_fd, VIDIOC_DQBUF, &output_buf, "Can't fetch OUTPUT buffer");
+			E_XIOCTL(RUN_FD(output_fd), VIDIOC_DQBUF, &output_buf, "Can't fetch OUTPUT buffer");
+			E_LOG_DEBUG("Fetched ...");
 
 			bool done = false;
 			if (ts.tv_sec != output_buf.timestamp.tv_sec || ts.tv_usec != output_buf.timestamp.tv_usec) {
@@ -532,13 +548,16 @@ static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, fra
 				// входному (с тем же таймстампом).
 				E_LOG_DEBUG("Need to retry OUTPUT buffer due timestamp mismatch");
 			} else {
-				frame_set_data(dest, RUN(output_bufs[output_buf.index].data), output_plane.bytesused);
+				if (RUN(mplanes) > 0)
+					frame_set_data(dest, RUN(output_bufs[output_buf.index].data), output_plane.bytesused);
+				else
+					frame_set_data(dest, RUN(output_bufs[output_buf.index].data), output_buf.bytesused);
 				dest->key = output_buf.flags & V4L2_BUF_FLAG_KEYFRAME;
 				done = true;
 			}
 
 			E_LOG_DEBUG("Releasing OUTPUT buffer=%u ...", output_buf.index);
-			E_XIOCTL(output_fd, VIDIOC_QBUF, &output_buf, "Can't release OUTPUT buffer=%u", output_buf.index);
+			E_XIOCTL(RUN_FD(output_fd), VIDIOC_QBUF, &output_buf, "Can't release OUTPUT buffer=%u", output_buf.index);
 
 			if (done) {
 				break;

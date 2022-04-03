@@ -70,6 +70,9 @@ void encoder_destroy(encoder_s *enc) {
 		}
 		free(ER(m2ms));
 	}
+	if (ER(m2m_isp)) {
+		m2m_encoder_destroy(ER(m2m_isp));
+	}
 	A_MUTEX_DESTROY(&ER(mutex));
 	free(enc->run);
 	free(enc);
@@ -93,6 +96,10 @@ const char *encoder_type_to_string(encoder_type_e type) {
 	return _ENCODER_TYPES[0].name;
 }
 
+static inline bool requires_m2m_isp(unsigned format) {
+	return (format == V4L2_PIX_FMT_SRGGB10P);
+}
+
 workers_pool_s *encoder_workers_pool_init(encoder_s *enc, device_s *dev) {
 #	define DR(_next) dev->run->_next
 
@@ -104,6 +111,11 @@ workers_pool_s *encoder_workers_pool_init(encoder_s *enc, device_s *dev) {
 	if (is_jpeg(DR(format)) && type != ENCODER_TYPE_HW) {
 		LOG_INFO("Switching to HW encoder: the input is (M)JPEG ...");
 		type = ENCODER_TYPE_HW;
+	}
+
+	if (requires_m2m_isp(DR(format))) {
+		LOG_INFO("M2M requires to use ISP.");
+		ER(m2m_isp) = m2m_isp_encoder_init("ISP", "/dev/video13", "/dev/video14", V4L2_PIX_FMT_YUYV);
 	}
 
 	if (type == ENCODER_TYPE_HW) {
@@ -198,11 +210,22 @@ static void _worker_job_destroy(void *v_job) {
 static bool _worker_run_job(worker_s *wr) {
 	encoder_job_s *job = (encoder_job_s *)wr->job;
 	frame_s *src = &job->hw->raw;
+	frame_s *tmp = NULL;
 	frame_s *dest = job->dest;
 
 #	define ER(_next) job->enc->run->_next
 
 	assert(ER(type) != ENCODER_TYPE_UNKNOWN);
+
+	if (requires_m2m_isp(src->format)) {
+		tmp = frame_init();
+
+		if (m2m_encoder_compress(ER(m2m_isp), src, tmp, false) < 0) {
+			goto error;
+		}
+
+		src = tmp;
+	}
 
 	if (ER(type) == ENCODER_TYPE_CPU) {
 		LOG_VERBOSE("Compressing JPEG using CPU: worker=%s, buffer=%u",
@@ -234,11 +257,18 @@ static bool _worker_run_job(worker_s *wr) {
 		wr->name,
 		job->hw->buf.index);
 
+	if (src == tmp) {
+		frame_destroy(tmp);
+	}
+
 	return true;
 
 	error:
 		LOG_ERROR("Compression failed: worker=%s, buffer=%u", wr->name, job->hw->buf.index);
 		LOG_ERROR("Error while compressing buffer, falling back to CPU");
+		if (src == tmp) {
+			frame_destroy(tmp);
+		}
 		A_MUTEX_LOCK(&ER(mutex));
 		ER(cpu_forced) = true;
 		A_MUTEX_UNLOCK(&ER(mutex));
