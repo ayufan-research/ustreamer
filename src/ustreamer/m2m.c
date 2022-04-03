@@ -364,10 +364,14 @@ static int _m2m_encoder_init_buffers(
 			buf.memory = V4L2_MEMORY_MMAP;
 			buf.index = *n_bufs_ptr;
 
+			m2m_buffer_s *m2m_buf = &(*bufs_ptr)[*n_bufs_ptr];
+
 			if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE || type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 				buf.length = 1;
 				buf.m.planes = &plane;
 			}
+
+			m2m_buf->dma_fd = -1;
 
 			E_LOG_DEBUG("Querying %s buffer=%u ...", name, *n_bufs_ptr);
 			E_XIOCTL(fd, VIDIOC_QUERYBUF, &buf, "Can't query %s buffer=%u", name, *n_bufs_ptr);
@@ -375,7 +379,7 @@ static int _m2m_encoder_init_buffers(
 			E_LOG_DEBUG("Mapping %s buffer=%u ...", name, *n_bufs_ptr);
 
 			if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE || type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
-				if (((*bufs_ptr)[*n_bufs_ptr].data = mmap(
+				if ((m2m_buf->data = mmap(
 					NULL,
 					plane.length,
 					PROT_READ | PROT_WRITE,
@@ -386,9 +390,9 @@ static int _m2m_encoder_init_buffers(
 					E_LOG_PERROR("Can't map %s buffer=%u", name, *n_bufs_ptr);
 					goto error;
 				}
-				(*bufs_ptr)[*n_bufs_ptr].allocated = plane.length;
+				m2m_buf->allocated = plane.length;
 			} else {
-				if (((*bufs_ptr)[*n_bufs_ptr].data = mmap(
+				if ((m2m_buf->data = mmap(
 					NULL,
 					buf.length,
 					PROT_READ | PROT_WRITE,
@@ -399,12 +403,21 @@ static int _m2m_encoder_init_buffers(
 					E_LOG_PERROR("Can't map %s buffer=%u", name, *n_bufs_ptr);
 					goto error;
 				}
-				(*bufs_ptr)[*n_bufs_ptr].allocated = buf.length;
+				m2m_buf->allocated = buf.length;
 				E_LOG_DEBUG("Mapped %s buffer=%u ptr=%p size=%zu...", name, *n_bufs_ptr, (*bufs_ptr)[*n_bufs_ptr].data, buf.length);
 			}
 
 			E_LOG_DEBUG("Queuing %s buffer=%u ...", name, *n_bufs_ptr);
 			E_XIOCTL(fd, VIDIOC_QBUF, &buf, "Can't queue %s buffer=%u", name, *n_bufs_ptr);
+
+			if (RUN(dma)) {
+				struct v4l2_exportbuffer exp = {0};
+				exp.type = type;
+				exp.index = *n_bufs_ptr;
+				exp.plane = 0;
+				E_XIOCTL(fd, VIDIOC_EXPBUF, &exp, "Can't export queue %s buffer=%u to DMA", name, *n_bufs_ptr);
+				m2m_buf->dma_fd = exp.fd;
+			}
 		}
 	}
 
@@ -436,6 +449,9 @@ static void _m2m_encoder_cleanup(m2m_encoder_s *enc) {
 					if (munmap(RUN(_target##_bufs[index].data), RUN(_target##_bufs[index].allocated)) < 0) { \
 						E_LOG_PERROR("Can't unmap %s buffer=%u", #_name, index); \
 					} \
+				} \
+				if (RUN(_target##_bufs[index].dma_fd) >= 0) { \
+					close(RUN(_target##_bufs[index].dma_fd)); \
 				} \
 			} \
 			free(RUN(_target##_bufs)); \

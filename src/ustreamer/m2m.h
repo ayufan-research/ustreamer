@@ -46,6 +46,7 @@
 typedef struct {
 	uint8_t	*data;
 	size_t	allocated;
+	int dma_fd;
 } m2m_buffer_s;
 
 typedef struct {
