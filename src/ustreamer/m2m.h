@@ -49,6 +49,12 @@ typedef struct {
 } m2m_buffer_s;
 
 typedef struct {
+	struct v4l2_buffer buf;
+	struct v4l2_plane plane;
+	m2m_buffer_s *m2m_buffer;
+} m2m_frame_s;
+
+typedef struct {
 	char		*name;
 	uint32_t	id;
 	int32_t		value;

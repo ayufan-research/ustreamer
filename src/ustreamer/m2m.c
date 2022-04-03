@@ -35,8 +35,9 @@ static int _m2m_encoder_init_buffers(
 
 static void _m2m_encoder_cleanup(m2m_encoder_s *enc);
 
-static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, frame_s *dest, bool force_key);
+static int _m2m_encoder_grab_frame(m2m_encoder_s *enc, const frame_s *src, m2m_frame_s *frame, bool force_key);
 
+static int _m2m_encoder_release_frame(m2m_encoder_s *enc, m2m_frame_s *frame);
 
 #define E_LOG_ERROR(_msg, ...)		LOG_ERROR("%s: " _msg, enc->name, ##__VA_ARGS__)
 #define E_LOG_PERROR(_msg, ...)		LOG_PERROR("%s: " _msg, enc->name, ##__VA_ARGS__)
@@ -134,12 +135,21 @@ int m2m_encoder_compress(m2m_encoder_s *enc, const frame_s *src, frame_s *dest, 
 
 	force_key = (enc->output_format == V4L2_PIX_FMT_H264 && (force_key || RUN(last_online) != src->online));
 
-	if (_m2m_encoder_compress_raw(enc, src, dest, force_key) < 0) {
+	m2m_frame_s frame;
+	if (_m2m_encoder_grab_frame(enc, src, &frame, force_key) < 0) {
 		_m2m_encoder_cleanup(enc);
 		E_LOG_ERROR("Encoder destroyed due an error (compress)");
 		return -1;
 	}
 
+	E_LOG_DEBUG("dest=%p, src=%p, bytes=%zu, space=%zu", dest, frame.m2m_buffer->data, frame.buf.bytesused, frame.m2m_buffer->allocated);
+	if (RUN(mplanes) > 0)
+		frame_set_data(dest, frame.m2m_buffer->data, frame.plane.bytesused);
+	else
+		frame_set_data(dest, frame.m2m_buffer->data, frame.buf.bytesused);
+	dest->key = frame.buf.flags & V4L2_BUF_FLAG_KEYFRAME;
+
+	_m2m_encoder_release_frame(enc, &frame);
 	frame_encoding_end(dest);
 
 	E_LOG_VERBOSE("Compressed new frame: size=%zu, time=%0.3Lf, force_key=%d",
@@ -238,13 +248,22 @@ static int _m2m_encoder_prepare(m2m_encoder_s *enc, const frame_s *frame) {
 	{
 		struct v4l2_format fmt = {0};
 		fmt.type = RUN(input_type);
-		fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_JPEG; // libcamera currently has no means to request the right colour space
-		fmt.fmt.pix_mp.width = RUN(width);
-		fmt.fmt.pix_mp.height = RUN(height);
-		fmt.fmt.pix_mp.pixelformat = RUN(input_format);
-		fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
-		fmt.fmt.pix_mp.num_planes = RUN(mplanes);
-		// fmt.fmt.pix_mp.plane_fmt[0].bytesperline = RUN(stride);
+		if (RUN(mplanes) > 0) {
+			fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_JPEG; // libcamera currently has no means to request the right colour space
+			fmt.fmt.pix_mp.width = RUN(width);
+			fmt.fmt.pix_mp.height = RUN(height);
+			fmt.fmt.pix_mp.pixelformat = RUN(input_format);
+			fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
+			fmt.fmt.pix_mp.num_planes = RUN(mplanes);
+			// fmt.fmt.pix_mp.plane_fmt[0].bytesperline = RUN(stride);
+		} else {
+			fmt.fmt.pix.colorspace = V4L2_COLORSPACE_JPEG; // libcamera currently has no means to request the right colour space
+			fmt.fmt.pix.width = RUN(width);
+			fmt.fmt.pix.height = RUN(height);
+			fmt.fmt.pix.pixelformat = RUN(input_format);
+			fmt.fmt.pix.field = V4L2_FIELD_ANY;
+			fmt.fmt.pix.bytesperline = RUN(stride);
+		}
 		E_LOG_DEBUG("Configuring INPUT format ...");
 		E_XIOCTL(RUN_FD(fd), VIDIOC_S_FMT, &fmt, "Can't set INPUT format");
 	}
@@ -252,17 +271,25 @@ static int _m2m_encoder_prepare(m2m_encoder_s *enc, const frame_s *frame) {
 	{
 		struct v4l2_format fmt = {0};
 		fmt.type = RUN(output_type);
-		fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_DEFAULT;
-		fmt.fmt.pix_mp.width = RUN(width);
-		fmt.fmt.pix_mp.height = RUN(height);
-		fmt.fmt.pix_mp.pixelformat = enc->output_format;
-		fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
-		fmt.fmt.pix_mp.num_planes = RUN(mplanes);
-		// fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
-		// fmt.fmt.pix_mp.plane_fmt[0].sizeimage = 512 << 10;
+		if (RUN(mplanes) > 0) {
+			fmt.fmt.pix_mp.colorspace = V4L2_COLORSPACE_DEFAULT;
+			fmt.fmt.pix_mp.width = RUN(width);
+			fmt.fmt.pix_mp.height = RUN(height);
+			fmt.fmt.pix_mp.pixelformat = enc->output_format;
+			fmt.fmt.pix_mp.field = V4L2_FIELD_ANY;
+			fmt.fmt.pix_mp.num_planes = RUN(mplanes);
+			// fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
+			// fmt.fmt.pix_mp.plane_fmt[0].sizeimage = 512 << 10;
+		} else {
+			fmt.fmt.pix.colorspace = V4L2_COLORSPACE_DEFAULT;
+			fmt.fmt.pix.width = RUN(width);
+			fmt.fmt.pix.height = RUN(height);
+			fmt.fmt.pix.pixelformat = enc->output_format;
+			fmt.fmt.pix.field = V4L2_FIELD_ANY;
+		}
 		E_LOG_DEBUG("Configuring OUTPUT format ...");
 		E_XIOCTL(RUN_FD(output_fd), VIDIOC_S_FMT, &fmt, "Can't set OUTPUT format");
-		if (fmt.fmt.pix_mp.pixelformat != enc->output_format) {
+		if ((RUN(mplanes) > 0 ? fmt.fmt.pix_mp.pixelformat : fmt.fmt.pix.pixelformat) != enc->output_format) {
 			char fourcc_str[8];
 			E_LOG_ERROR("The OUTPUT format can't be configured as %s",
 				fourcc_to_string(enc->output_format, fourcc_str, 8));
@@ -373,6 +400,7 @@ static int _m2m_encoder_init_buffers(
 					goto error;
 				}
 				(*bufs_ptr)[*n_bufs_ptr].allocated = buf.length;
+				E_LOG_DEBUG("Mapped %s buffer=%u ptr=%p size=%zu...", name, *n_bufs_ptr, (*bufs_ptr)[*n_bufs_ptr].data, buf.length);
 			}
 
 			E_LOG_DEBUG("Queuing %s buffer=%u ...", name, *n_bufs_ptr);
@@ -441,7 +469,7 @@ static void _m2m_encoder_cleanup(m2m_encoder_s *enc) {
 	E_LOG_DEBUG("Encoder state: ~~~ NOT READY ~~~");
 }
 
-static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, frame_s *dest, bool force_key) {
+static int _m2m_encoder_grab_frame(m2m_encoder_s *enc, const frame_s *src, m2m_frame_s *frame, bool force_key) {
 	assert(RUN(ready));
 
 	E_LOG_DEBUG("Compressing new frame; force_key=%d ...", force_key);
@@ -501,6 +529,7 @@ static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, fra
 		input_buf.length = src->used;
 	}
 	if (!RUN(dma)) {
+		E_LOG_DEBUG("dest=%p, src=%p, bytes=%zu, space=%zu", RUN(input_bufs[input_buf.index].data), src->data, src->used, RUN(input_bufs[input_buf.index].allocated));
 		memcpy(RUN(input_bufs[input_buf.index].data), src->data, src->used);
 	}
 
@@ -529,36 +558,23 @@ static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, fra
 				input_released = true;
 			}
 
-			struct v4l2_buffer output_buf = {0};
-			struct v4l2_plane output_plane = {0};
-			output_buf.type = RUN(output_type);
-			output_buf.memory = V4L2_MEMORY_MMAP;
-			output_buf.length = 1;
-			output_buf.m.planes = &output_plane;
+			frame->buf.type = RUN(output_type);
+			frame->buf.memory = V4L2_MEMORY_MMAP;
+			frame->buf.length = 1;
+			frame->buf.m.planes = &frame->plane;
 			E_LOG_DEBUG("Fetching OUTPUT buffer ...");
-			E_XIOCTL(RUN_FD(output_fd), VIDIOC_DQBUF, &output_buf, "Can't fetch OUTPUT buffer");
+			E_XIOCTL(RUN_FD(output_fd), VIDIOC_DQBUF, &frame->buf, "Can't fetch OUTPUT buffer");
 			E_LOG_DEBUG("Fetched ...");
 
-			bool done = false;
-			if (ts.tv_sec != output_buf.timestamp.tv_sec || ts.tv_usec != output_buf.timestamp.tv_usec) {
+			if (ts.tv_sec != frame->buf.timestamp.tv_sec || ts.tv_usec != frame->buf.timestamp.tv_usec) {
 				// Енкодер первый раз может выдать буфер с мусором и нулевым таймстампом,
 				// так что нужно убедиться, что мы читаем выходной буфер, соответствующий
 				// входному (с тем же таймстампом).
 				E_LOG_DEBUG("Need to retry OUTPUT buffer due timestamp mismatch");
+				_m2m_encoder_release_frame(enc, frame);
 			} else {
-				if (RUN(mplanes) > 0)
-					frame_set_data(dest, RUN(output_bufs[output_buf.index].data), output_plane.bytesused);
-				else
-					frame_set_data(dest, RUN(output_bufs[output_buf.index].data), output_buf.bytesused);
-				dest->key = output_buf.flags & V4L2_BUF_FLAG_KEYFRAME;
-				done = true;
-			}
-
-			E_LOG_DEBUG("Releasing OUTPUT buffer=%u ...", output_buf.index);
-			E_XIOCTL(RUN_FD(output_fd), VIDIOC_QBUF, &output_buf, "Can't release OUTPUT buffer=%u", output_buf.index);
-
-			if (done) {
-				break;
+				frame->m2m_buffer = &RUN(output_bufs[frame->buf.index]);
+				return true;
 			}
 		}
 	}
@@ -566,6 +582,14 @@ static int _m2m_encoder_compress_raw(m2m_encoder_s *enc, const frame_s *src, fra
 	return 0;
 	error:
 		return -1;
+}
+
+static int _m2m_encoder_release_frame(m2m_encoder_s *enc, m2m_frame_s *frame) {
+	E_LOG_DEBUG("Releasing OUTPUT buffer=%u ...", frame->buf.index);
+	E_XIOCTL(RUN_FD(output_fd), VIDIOC_QBUF, &frame->buf, "Can't release OUTPUT buffer=%u", frame->buf.index);
+	return 0;
+error:
+	return -1;
 }
 
 #undef E_XIOCTL

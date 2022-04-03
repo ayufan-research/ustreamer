@@ -280,6 +280,7 @@ static workers_pool_s *_stream_init_one(stream_s *stream) {
 		stream->enc->type == ENCODER_TYPE_M2M_VIDEO
 		|| stream->enc->type == ENCODER_TYPE_M2M_IMAGE
 		|| (RUN(h264) && !is_jpeg(stream->dev->run->format))
+		|| stream->dev->run->format == V4L2_PIX_FMT_SRGGB10P
 	) {
 		device_export_to_dma(stream->dev);
 	}
