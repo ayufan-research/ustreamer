@@ -37,6 +37,7 @@ static const struct {
 	const char *name;
 	const unsigned format;
 } _FORMATS[] = {
+	{"pRAA",  V4L2_PIX_FMT_SRGGB10P},
 	{"YUYV",	V4L2_PIX_FMT_YUYV},
 	{"UYVY",	V4L2_PIX_FMT_UYVY},
 	{"RGB565",	V4L2_PIX_FMT_RGB565},

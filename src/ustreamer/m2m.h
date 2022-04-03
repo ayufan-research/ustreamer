@@ -56,6 +56,7 @@ typedef struct {
 
 typedef struct {
 	int				fd;
+	int				output_fd;
 	m2m_buffer_s	*input_bufs;
 	unsigned		n_input_bufs;
 	m2m_buffer_s	*output_bufs;
@@ -74,6 +75,7 @@ typedef struct {
 typedef struct {
 	char			*name;
 	char			*path;
+	char			*output_path;
 	unsigned		output_format;
 	unsigned		fps;
 	bool			allow_dma;
@@ -86,6 +88,7 @@ typedef struct {
 m2m_encoder_s *m2m_h264_encoder_init(const char *name, const char *path, unsigned bitrate, unsigned gop);
 m2m_encoder_s *m2m_mjpeg_encoder_init(const char *name, const char *path, unsigned quality);
 m2m_encoder_s *m2m_jpeg_encoder_init(const char *name, const char *path, unsigned quality);
+m2m_encoder_s *m2m_isp_encoder_init(const char *name, const char *input_path, const char *output_path, unsigned output_format);
 void m2m_encoder_destroy(m2m_encoder_s *enc);
 
 int m2m_encoder_compress(m2m_encoder_s *enc, const frame_s *src, frame_s *dest, bool force_key);
