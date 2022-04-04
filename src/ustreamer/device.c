@@ -506,7 +506,7 @@ static int _device_open_format(device_s *dev, bool first) {
 	unsigned stride = align_size(RUN(width), 32) << 1;
 
 	if (dev->format == V4L2_PIX_FMT_SRGGB10P) {
-		stride = RUN(width) * 5 / 4;
+		stride = align_size(RUN(width) * 5 / 4, 32);
 	}
 
 	struct v4l2_format fmt = {0};
